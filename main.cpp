@@ -3,6 +3,7 @@
 #include <igl/colon.h>
 #include <igl/slice.h>
 #include <igl/upsample.h>
+#include <igl/false_barycentric_subdivision.h>
 #include <igl/decimate.h>
 #include <igl/shortest_edge_and_midpoint.h>
 #include <igl/harmonic.h>
@@ -69,43 +70,139 @@ bool parseIntParam(const char* param, int argc, char* argv[], unsigned int& out)
 	}
 }
 
-int main(int argc, char *argv[])
+void getNringBoundaryMesh(const MatrixXd& originalV, const MatrixXi& originalF, MatrixXi& nRingF)
 {
-	
-	//
-	// command line parsing.
-	//
-	const char* inFile = parseStringParam("-in", argc, argv);
-	if (inFile == nullptr) printHelpExit();
+	VectorXi originalLoop; // indices of the boundary of the hole. 
+	igl::boundary_loop(originalF, originalLoop);	
 
-	const char* outFile = parseStringParam("-out", argc, argv);
-	if (outFile == nullptr) printHelpExit();
-
-	unsigned int outFacesN;
-	if (!parseIntParam("-outfaces", argc, argv, outFacesN)) printHelpExit();
-
-	unsigned int upsampleN;
-	if (!parseIntParam("-upsample", argc, argv, upsampleN)) printHelpExit();
-	
-	// original mesh vertices and indices. This is the original mesh, which has a hole.
-	MatrixXd originalV;
-	MatrixXi originalF;
-
-	if (!igl::readOFF(inFile, originalV, originalF)) {
-		printHelpExit();
+	Eigen::SparseVector<int> isBoundary((int)originalV.rows());
+	for (int i = 0; i < originalLoop.size(); i++)
+	{
+		isBoundary.coeffRef(originalLoop(i)) = 1;
 	}
 
+	Eigen::SparseMatrix<int> adjMatrix((int)originalV.rows(), (int)originalV.rows());
+	igl::adjacency_matrix(originalF, adjMatrix);
+
+	Eigen::SparseVector<int> n_ring_boundary = (adjMatrix)* isBoundary;
+
+	VectorXi boundaryVi, values;
+	igl::find(n_ring_boundary, boundaryVi, values);
+
+	//Triangles in n-ring
+	int nonZeros = n_ring_boundary.nonZeros();
+	nRingF = MatrixXi(nonZeros + 2, 3);//not sure why '+2'
+	int j = 0;
+	for (int i = 0; i < originalF.rows(); i++)
+	{
+		int a = originalF(i, 0);
+		int b = originalF(i, 1);
+		int c = originalF(i, 2);
+
+		if (n_ring_boundary.coeffRef(a) > 0 && n_ring_boundary.coeffRef(b) > 0 && n_ring_boundary.coeffRef(c) > 0)
+		{
+			nRingF(j, 0) = a;
+			nRingF(j, 1) = b;
+			nRingF(j, 2) = c;
+			j++;
+		}
+	}
+}
+
+void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& originalF, MatrixXd& nRingV, MatrixXi& nRingF)
+{
 	VectorXi originalLoop; // indices of the boundary of the hole. 
 	igl::boundary_loop(originalF, originalLoop);
 
-	if (originalLoop.size() == 0) {
-		printf("Mesh has no hole!");
-		printHelpExit();
+	Eigen::SparseVector<int> isBoundary((int)originalV.rows());
+	for (int i = 0; i < originalLoop.size(); i++)
+	{
+		isBoundary.coeffRef(originalLoop(i)) = 1;
 	}
 
-	// upsample the original mesh. this makes fusing the original mesh with the patch much easier.
-	igl::upsample(Eigen::MatrixXd(originalV), Eigen::MatrixXi(originalF), originalV, originalF, upsampleN);
+	std::cout << "Rows before" << originalV.rows();
+	//upsampling
+	nRingV = originalV;
+	nRingV.conservativeResize(nRingV.rows()+isBoundary.nonZeros(), nRingV.cols());
 
+	int counterV = originalV.rows();
+	int counterF = nRingF.rows();
+	int initF = counterF;
+
+	nRingF.conservativeResize(nRingF.rows() + isBoundary.nonZeros(), nRingF.cols());
+
+	for (int i = 0; i < initF; i++)
+	{
+		int a = nRingF(i, 0);
+		int b = nRingF(i, 1);
+		int c = nRingF(i, 2);
+		
+		auto boundaryCounter = [&](int i){
+		    return (int)isBoundary.coeffRef(i)>0;
+		};
+		int boundaryCount = boundaryCounter(a) + boundaryCounter(b) + boundaryCounter(c);
+
+		if (boundaryCount==2)
+		{
+						
+			nRingV(counterV, 0) = 0;
+			nRingV(counterV, 1) = 0;
+			nRingV(counterV, 2) = 0;
+
+			auto midPoint = [&](int i){
+				return (boundaryCounter(a) * nRingV(a, i) + boundaryCounter(b) * nRingV(b, i) + boundaryCounter(c) * nRingV(c, i)) / 2;
+			};
+
+			nRingV(counterV, 0) = midPoint(0);
+			nRingV(counterV, 1) = midPoint(1);
+			nRingV(counterV, 2) = midPoint(2);
+			/*nRingV(nRingV.rows(), 0) = (isBoundary.coeffRef(a)*nRingV(a, 0) + isBoundary.coeffRef(b)*nRingV(b, 0) + isBoundary.coeffRef(c)*nRingV(c, 0)) / 2;
+			nRingV(nRingV.rows(), 1) = (isBoundary.coeffRef(a)*nRingV(a, 1) + isBoundary.coeffRef(b)*nRingV(b, 1) + isBoundary.coeffRef(c)*nRingV(c, 1)) / 2;
+			nRingV(nRingV.rows(), 2) = (isBoundary.coeffRef(a)*nRingV(a, 2) + isBoundary.coeffRef(b)*nRingV(b, 2) + isBoundary.coeffRef(c)*nRingV(c, 2)) / 2;*/
+			
+			if (isBoundary.coeffRef(a) == 0)
+			{
+				nRingF(i, 0) = a;
+				nRingF(i, 1) = b;
+				nRingF(i, 2) = counterV;
+
+				nRingF(counterF, 0) = a;
+				nRingF(counterF, 1) = counterV;
+				nRingF(counterF, 2) = c;
+			}
+			if (isBoundary.coeffRef(b) == 0)
+			{
+				nRingF(i, 0) = b;
+				nRingF(i, 1) = counterV;
+				nRingF(i, 2) = a;
+
+				nRingF(counterF, 0) = b;
+				nRingF(counterF, 1) = c;
+				nRingF(counterF, 2) = counterV;
+			}
+
+			if (isBoundary.coeffRef(c) == 0)
+			{
+				nRingF(i, 0) = a;
+				nRingF(i, 1) = counterV;
+				nRingF(i, 2) = c;
+
+				nRingF(counterF, 0) = b;
+				nRingF(counterF, 1) = c;
+				nRingF(counterF, 2) = counterV;
+			}
+			counterF++;
+			counterV++;
+
+
+		}
+
+	}
+	std::cout << "Rows after" << originalV.rows();
+}
+
+void createMeshPatch(const VectorXi& originalLoop, const MatrixXd& originalV, MatrixXd& patchV, MatrixXi& patchF)
+{
 	// compute boundary center.
 	VectorXd bcenter(3);
 	{
@@ -118,8 +215,8 @@ int main(int argc, char *argv[])
 	}
 
 	// a flat patch that fills the hole.
-	MatrixXd patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
-	MatrixXi patchF = MatrixXi(originalLoop.size(), 3);
+	//patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
+	//patchF = MatrixXi(originalLoop.size(), 3);
 
 	{
 		VectorXi R = originalLoop;
@@ -142,10 +239,14 @@ int main(int argc, char *argv[])
 		}
 
 		// also upsample patch. patch and original mesh will have the same upsampling level now
-		// making it trivial to fuse them together.
-		igl::upsample(Eigen::MatrixXd(patchV), Eigen::MatrixXi(patchF), patchV, patchF, upsampleN);
-	}
+		// making it trivial to fuse them together.		
 
+		//igl::upsample(Eigen::MatrixXd(patchV), Eigen::MatrixXi(patchF), patchV, patchF, upsampleN);
+	}
+}
+
+void fuseMeshes(const MatrixXd& patchV, const MatrixXi& patchF, const MatrixXd& originalV, const MatrixXi& originalF, MatrixXd& fairedV, MatrixXi& fairedF)
+{
 	// the final mesh, where the patch and original mesh has been fused together.
 	std::vector<std::vector<double>> fusedV;
 	std::vector<std::vector<int>> fusedF;
@@ -222,41 +323,133 @@ int main(int argc, char *argv[])
 
 	}
 
-	MatrixXd fairedV(fusedV.size(), 3);
-	MatrixXi fairedF(fusedF.size(), 3);
+	fairedV = MatrixXd(fusedV.size(), 3); //vertices
+	fairedF = MatrixXi (fusedF.size(), 3); //faces
+
+
+	for (int vindex = 0; vindex < fusedV.size(); ++vindex) {
+		auto r = fusedV[vindex];
+
+		fairedV(vindex, 0) = r[0];
+		fairedV(vindex, 1) = r[1];
+		fairedV(vindex, 2) = r[2];
+	}
+
+	for (int findex = 0; findex < fusedF.size(); ++findex) {
+		auto r = fusedF[findex];
+
+		fairedF(findex, 0) = r[0];
+		fairedF(findex, 1) = r[1];
+		fairedF(findex, 2) = r[2];
+	}
+
+}
+
+int main(int argc, char *argv[])
+{
+	
+	//
+	// command line parsing.
+	//
+	const char* inFile = parseStringParam("-in", argc, argv);
+	if (inFile == nullptr) printHelpExit();
+
+	const char* outFile = parseStringParam("-out", argc, argv);
+	if (outFile == nullptr) printHelpExit();
+
+	unsigned int outFacesN;
+	if (!parseIntParam("-outfaces", argc, argv, outFacesN)) printHelpExit();
+
+	unsigned int upsampleN;
+	if (!parseIntParam("-upsample", argc, argv, upsampleN)) printHelpExit();
+	
+	// original mesh vertices and indices. This is the original mesh, which has a hole.
+	MatrixXd originalV;
+	MatrixXi originalF;
+
+	if (!igl::readOFF(inFile, originalV, originalF)) {
+		printHelpExit();
+	}	
+
+	VectorXi originalLoop; // indices of the boundary of the hole. 
+	igl::boundary_loop(originalF, originalLoop);
+
+	if (originalLoop.size() == 0) {
+		printf("Mesh has no hole!");
+		printHelpExit();
+	}
+	
+	MatrixXi nRingF;
+	//Create N-ring boundary face matrix
+	getNringBoundaryMesh(originalV, originalF, nRingF);
+
+	// Plot the mesh
+	//igl::opengl::glfw::Viewer viewer;
+	//viewer.data().set_mesh(originalV, nRingF);
+	//viewer.launch();
+
+	//igl::writeOFF(outFile, originalV, nRingF);
+	//return 0;
+
+	//Subdivide inner ring boundary
+	MatrixXd nRingV;
+	subdivideInnerRingBoundary(originalV, originalF, nRingV, nRingF);
+	igl::writeOFF(outFile, nRingV, nRingF);
+	return 0;
+
+	// upsample the original mesh. this makes fusing the original mesh with the patch much easier.
+	//igl::upsample(Eigen::MatrixXd(originalV), Eigen::MatrixXi(originalF), originalV, originalF, upsampleN);	
+
+	// a flat patch that fills the hole.
+	MatrixXd patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
+	MatrixXi patchF = MatrixXi(originalLoop.size(), 3);	
+	createMeshPatch(originalLoop, originalV, patchV, patchF);
+
+
+	//Fuse meshes
+	MatrixXd fairedV; //vertices
+	MatrixXi fairedF; //faces
+	fuseMeshes(patchV, patchF, originalV, nRingF, fairedV, fairedF);
+	
 	// now we shall do surface fairing on the mesh, to ensure
 	// that the patch conforms to the surrounding curvature.
 	{
 
-		for (int vindex = 0; vindex < fusedV.size(); ++vindex) {
-			auto r = fusedV[vindex];
+		//igl::writeOFF(outFile, fairedV, fairedF);
+		//return 0;
 
-			fairedV(vindex, 0) = r[0];
-			fairedV(vindex, 1) = r[1];
-			fairedV(vindex, 2) = r[2];
+		VectorXi b(fairedV.rows() - patchV.rows() /*+ patchBorder.size()*/);
+		MatrixXd bc(fairedV.rows() - patchV.rows() /*+ patchBorder.size()*/, 3);
+		
+								  // setup the boundary conditions. This is simply the vertex positions of the vertices not part of the patch.		
+		
+		//Original boundary
+		for (int i = (int)patchV.rows(); i < (int)fairedV.rows(); ++i)
+		{					
+				int jj = i - (int)patchV.rows();	
+				b(jj) = i;
+
+				bc(jj, 0) = fairedV(i, 0);
+				bc(jj, 1) = fairedV(i, 1);
+				bc(jj, 2) = fairedV(i, 2);			
+
 		}
+		//std::cout << "This is b" << b << '\n';
+		//std::cout << "This is bC" << bc << '\n';		
+		
+		//TODO Add to b and bc all the vertices around the patch
+		/*auto offset = (int)fairedV.rows() - (int)patchV.rows();
+		for (int i = 0; i < patchBorder.size(); ++i) {
+			int jj = i+ offset;
 
-		for (int findex = 0; findex < fusedF.size(); ++findex) {
-			auto r = fusedF[findex];
+			b(jj) = patchBorder[i];
 
-			fairedF(findex, 0) = r[0];
-			fairedF(findex, 1) = r[1];
-			fairedF(findex, 2) = r[2];
+			bc(jj, 0) = fairedV(patchBorder[i], 0);
+			bc(jj, 1) = fairedV(patchBorder[i], 1);
+			bc(jj, 2) = fairedV(patchBorder[i], 2);
 		}
-
-		VectorXi b(fairedV.rows() - patchV.rows());
-		MatrixXd bc(fairedV.rows() - patchV.rows(), 3);
-		// setup the boundary conditions. This is simply the vertex positions of the vertices not part of the patch.
-		for (int i = (int)patchV.rows(); i < (int)fairedV.rows(); ++i) {
-			int jj = i - (int)patchV.rows();
-
-			b(jj) = i;
-
-			bc(jj, 0) = fairedV(i, 0);
-			bc(jj, 1) = fairedV(i, 1);
-			bc(jj, 2) = fairedV(i, 2);
-		}
-
+*/
+		
 		MatrixXd Z;
 		int k = 2;
 		// surface fairing simply means that we solve the equation
@@ -274,11 +467,16 @@ int main(int argc, char *argv[])
 	}
 
 	// finally, we do a decimation step.
-	MatrixXd finalV(fusedV.size(), 3);
+	/*MatrixXd finalV(fusedV.size(), 3);
 	MatrixXi finalF(fusedF.size(), 3);
 	VectorXi temp0; VectorXi temp1;
-	igl::decimate(fairedV, fairedF, outFacesN, finalV, finalF, temp0, temp1);
+	igl::decimate(fairedV, fairedF, outFacesN, finalV, finalF, temp0, temp1);*/
 	
-	igl::writeOFF(outFile, finalV, finalF);
+	//igl::writeOFF(outFile, finalV, finalF);
+	igl::writeOFF(outFile, fairedV, fairedF);
+	//igl::writeOFF(outFile, fairedV, nRingF);
+	//igl::writeOFF(outFile, patchV, patchF);
+	//igl::writeOFF(outFile, patchBoundary, patchF);
+
 }
 
