@@ -149,14 +149,24 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 			nRingV(counterV, 1) = 0;
 			nRingV(counterV, 2) = 0;
 
-			auto midPoint = [&](int i){
-				return (boundaryCounter(a) * nRingV(a, i) + boundaryCounter(b) * nRingV(b, i) + boundaryCounter(c) * nRingV(c, i)) / 2;
+			int v[2]={0,0},vi=0;
+			if(boundaryCounter(a))
+				v[vi++]=a;
+			if(boundaryCounter(b))
+				v[vi++]=b;
+			if(boundaryCounter(c))
+				v[vi++]=c;
+
+			auto divisions = 3;
+
+			auto midPoint = [&](int i) -> VectorXd {
+				double s0 = ((double)divisions - i - 1)/((double)divisions-i);
+				double s1 = 1-s0;
+				return s0 * nRingV.row(v[0]) + s1*nRingV.row(v[1]);	
 			};
 
-			nRingV(counterV, 0) = midPoint(0);
-			nRingV(counterV, 1) = midPoint(1);
-			nRingV(counterV, 2) = midPoint(2);
-			/*nRingV(nRingV.rows(), 0) = (isBoundary.coeffRef(a)*nRingV(a, 0) + isBoundary.coeffRef(b)*nRingV(b, 0) + isBoundary.coeffRef(c)*nRingV(c, 0)) / 2;
+			nRingV.row(counterV) = midPoint(1);
+		   /*nRingV(nRingV.rows(), 0) = (isBoundary.coeffRef(a)*nRingV(a, 0) + isBoundary.coeffRef(b)*nRingV(b, 0) + isBoundary.coeffRef(c)*nRingV(c, 0)) / 2;
 			nRingV(nRingV.rows(), 1) = (isBoundary.coeffRef(a)*nRingV(a, 1) + isBoundary.coeffRef(b)*nRingV(b, 1) + isBoundary.coeffRef(c)*nRingV(c, 1)) / 2;
 			nRingV(nRingV.rows(), 2) = (isBoundary.coeffRef(a)*nRingV(a, 2) + isBoundary.coeffRef(b)*nRingV(b, 2) + isBoundary.coeffRef(c)*nRingV(c, 2)) / 2;*/
 			
