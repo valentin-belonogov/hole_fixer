@@ -109,7 +109,7 @@ void getNringBoundaryMesh(const MatrixXd& originalV, const MatrixXi& originalF, 
 	}
 }
 
-void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& originalF, MatrixXd& nRingV, MatrixXi& nRingF)
+void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& originalF, MatrixXd& nRingV, MatrixXi& nRingF, int divisions)
 {
 	VectorXi originalLoop; // indices of the boundary of the hole. 
 	igl::boundary_loop(originalF, originalLoop);
@@ -123,13 +123,13 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 	std::cout << "Rows before" << originalV.rows();
 	//upsampling
 	nRingV = originalV;
-	nRingV.conservativeResize(nRingV.rows()+isBoundary.nonZeros(), nRingV.cols());
+	nRingV.conservativeResize(nRingV.rows()+isBoundary.nonZeros()*(divisions-2), nRingV.cols());
 
 	int counterV = originalV.rows();
 	int counterF = nRingF.rows();
 	int initF = counterF;
 
-	nRingF.conservativeResize(nRingF.rows() + isBoundary.nonZeros(), nRingF.cols());
+	nRingF.conservativeResize(nRingF.rows() + isBoundary.nonZeros()*(divisions-2), nRingF.cols());
 
 	for (int i = 0; i < initF; i++)
 	{
@@ -157,15 +157,18 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 			if(boundaryCounter(c))
 				v[vi++]=c;
 
-			auto divisions = 3;
+			//auto divisions = 3;
 
 			auto midPoint = [&](int i) -> VectorXd {
-				double s0 = ((double)divisions - i - 1)/((double)divisions-i);
+				double s0 = ((double)divisions - i - 1)/((double)divisions-1);
 				double s1 = 1-s0;
 				return s0 * nRingV.row(v[0]) + s1*nRingV.row(v[1]);	
 			};
 
-			nRingV.row(counterV) = midPoint(1);
+			for (int i=1;i<=divisions-2;i++)
+			{
+			nRingV.row(counterV+i-1) = midPoint(i);
+			}
 		   /*nRingV(nRingV.rows(), 0) = (isBoundary.coeffRef(a)*nRingV(a, 0) + isBoundary.coeffRef(b)*nRingV(b, 0) + isBoundary.coeffRef(c)*nRingV(c, 0)) / 2;
 			nRingV(nRingV.rows(), 1) = (isBoundary.coeffRef(a)*nRingV(a, 1) + isBoundary.coeffRef(b)*nRingV(b, 1) + isBoundary.coeffRef(c)*nRingV(c, 1)) / 2;
 			nRingV(nRingV.rows(), 2) = (isBoundary.coeffRef(a)*nRingV(a, 2) + isBoundary.coeffRef(b)*nRingV(b, 2) + isBoundary.coeffRef(c)*nRingV(c, 2)) / 2;*/
@@ -176,9 +179,16 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 				nRingF(i, 1) = b;
 				nRingF(i, 2) = counterV;
 
-				nRingF(counterF, 0) = a;
-				nRingF(counterF, 1) = counterV;
-				nRingF(counterF, 2) = c;
+				for(int i=1; i<divisions-2;i++)
+				{
+					nRingF(counterF+i-1, 0) = a;
+					nRingF(counterF+i-1, 1) = counterV+i-1;
+					nRingF(counterF+i-1, 2) = counterV+i;
+				}
+
+				nRingF(counterF+divisions-3, 0) = a;
+				nRingF(counterF+divisions-3, 1) = counterV+divisions-3;
+				nRingF(counterF+divisions-3, 2) = c;
 			}
 			if (isBoundary.coeffRef(b) == 0)
 			{
@@ -186,9 +196,16 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 				nRingF(i, 1) = counterV;
 				nRingF(i, 2) = a;
 
-				nRingF(counterF, 0) = b;
-				nRingF(counterF, 1) = c;
-				nRingF(counterF, 2) = counterV;
+				for (int i = 1; i < divisions - 2; i++)
+				{
+					nRingF(counterF + i - 1, 0) = counterV + i - 1;
+					nRingF(counterF + i - 1, 1) = b;
+					nRingF(counterF + i - 1, 2) = counterV + i;
+				}
+
+				nRingF(counterF+divisions-3, 0) = b;
+				nRingF(counterF+divisions-3, 1) = c;
+				nRingF(counterF+divisions-3, 2) = counterV+divisions-3;
 			}
 
 			if (isBoundary.coeffRef(c) == 0)
@@ -197,12 +214,19 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 				nRingF(i, 1) = counterV;
 				nRingF(i, 2) = c;
 
-				nRingF(counterF, 0) = b;
-				nRingF(counterF, 1) = c;
-				nRingF(counterF, 2) = counterV;
+				for (int i = 1; i < divisions - 2; i++)
+				{
+					nRingF(counterF + i - 1, 0) = c;
+					nRingF(counterF + i - 1, 1) = counterV + i - 1;
+					nRingF(counterF + i - 1, 2) = counterV + i;
+				}
+
+				nRingF(counterF+divisions-3, 0) = b;
+				nRingF(counterF+divisions-3, 1) = c;
+				nRingF(counterF+divisions-3, 2) = counterV+divisions-3;
 			}
-			counterF++;
-			counterV++;
+			counterF+=divisions-2;
+			counterV+=divisions-2;
 
 
 		}
@@ -403,9 +427,10 @@ int main(int argc, char *argv[])
 
 	//Subdivide inner ring boundary
 	MatrixXd nRingV;
-	subdivideInnerRingBoundary(originalV, originalF, nRingV, nRingF);
-	igl::writeOFF(outFile, nRingV, nRingF);
-	return 0;
+	int divisions = pow(upsampleN, 2)+1;
+	subdivideInnerRingBoundary(originalV, originalF, nRingV, nRingF, divisions);
+	//igl::writeOFF(outFile, nRingV, nRingF);
+	//return 0;
 
 	// upsample the original mesh. this makes fusing the original mesh with the patch much easier.
 	//igl::upsample(Eigen::MatrixXd(originalV), Eigen::MatrixXi(originalF), originalV, originalF, upsampleN);	
@@ -414,12 +439,12 @@ int main(int argc, char *argv[])
 	MatrixXd patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
 	MatrixXi patchF = MatrixXi(originalLoop.size(), 3);	
 	createMeshPatch(originalLoop, originalV, patchV, patchF);
-
+	igl::upsample(Eigen::MatrixXd(patchV), Eigen::MatrixXi(patchF), patchV, patchF, upsampleN);
 
 	//Fuse meshes
 	MatrixXd fairedV; //vertices
 	MatrixXi fairedF; //faces
-	fuseMeshes(patchV, patchF, originalV, nRingF, fairedV, fairedF);
+	fuseMeshes(patchV, patchF, nRingV, nRingF, fairedV, fairedF);
 	
 	// now we shall do surface fairing on the mesh, to ensure
 	// that the patch conforms to the surrounding curvature.

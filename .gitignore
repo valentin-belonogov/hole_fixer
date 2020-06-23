@@ -1,2 +1,4 @@
 /build
 /out*.off
+/ringboundary.txt
+/test.off
