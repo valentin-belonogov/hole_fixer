@@ -70,28 +70,27 @@ bool parseIntParam(const char* param, int argc, char* argv[], unsigned int& out)
 	}
 }
 
-void getNringBoundaryMesh(const MatrixXd& originalV, const MatrixXi& originalF, MatrixXi& nRingF)
+void get2ringBoundaryMesh(const MatrixXi& originalF, MatrixXi& nRingF)
 {
+	int m = originalF.array().maxCoeff()+1;
 	VectorXi originalLoop; // indices of the boundary of the hole. 
 	igl::boundary_loop(originalF, originalLoop);	
 
-	Eigen::SparseVector<int> isBoundary((int)originalV.rows());
+	Eigen::SparseVector<int> isBoundary(m);
 	for (int i = 0; i < originalLoop.size(); i++)
 	{
 		isBoundary.coeffRef(originalLoop(i)) = 1;
 	}
 
-	Eigen::SparseMatrix<int> adjMatrix((int)originalV.rows(), (int)originalV.rows());
+	Eigen::SparseMatrix<int> adjMatrix(m, m);
 	igl::adjacency_matrix(originalF, adjMatrix);
 
 	Eigen::SparseVector<int> n_ring_boundary = (adjMatrix)* isBoundary;
 
-	VectorXi boundaryVi, values;
-	igl::find(n_ring_boundary, boundaryVi, values);
-
 	//Triangles in n-ring
+	//A face that belongs to 2-ring boundary contains at least 1 vertex from boundary loop
 	int nonZeros = n_ring_boundary.nonZeros();
-	nRingF = MatrixXi(nonZeros + 2, 3);//not sure why '+2'
+	nRingF = MatrixXi(nonZeros, 3);
 	int j = 0;
 	for (int i = 0; i < originalF.rows(); i++)
 	{
@@ -99,7 +98,7 @@ void getNringBoundaryMesh(const MatrixXd& originalV, const MatrixXi& originalF, 
 		int b = originalF(i, 1);
 		int c = originalF(i, 2);
 
-		if (n_ring_boundary.coeffRef(a) > 0 && n_ring_boundary.coeffRef(b) > 0 && n_ring_boundary.coeffRef(c) > 0)
+		if (isBoundary.coeffRef(a) > 0 || isBoundary.coeffRef(b) > 0 || isBoundary.coeffRef(c) > 0)
 		{
 			nRingF(j, 0) = a;
 			nRingF(j, 1) = b;
@@ -109,7 +108,7 @@ void getNringBoundaryMesh(const MatrixXd& originalV, const MatrixXi& originalF, 
 	}
 }
 
-void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& originalF, MatrixXd& nRingV, MatrixXi& nRingF, int divisions)
+void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& originalF, int divisions, MatrixXd& nRingV, MatrixXi& nRingF)
 {
 	VectorXi originalLoop; // indices of the boundary of the hole. 
 	igl::boundary_loop(originalF, originalLoop);
@@ -379,6 +378,36 @@ void fuseMeshes(const MatrixXd& patchV, const MatrixXi& patchF, const MatrixXd& 
 
 }
 
+//
+void  smoothMeshWithFixed2ring(MatrixXd& meshV, MatrixXi& meshF, MatrixXd& smoothedMeshV)
+
+{	
+	int k = 2;
+	MatrixXi ringF; 
+	get2ringBoundaryMesh(meshF, ringF);
+	// surface fairing simply means that we solve the equation
+	// Delta^2 f = 0
+	// with appropriate boundary conditions.
+	// this function igl::harmonic from libigl takes care of that.
+	std::set<int> bs; 
+	for(int j = 0; j < ringF.array().size();j++){
+	  bs.insert(ringF.array()(j));
+	}
+	MatrixXi b(bs.size(),1);
+	int j = 0;
+	for(int idx:bs)
+	   b(j++)=idx;
+	
+	// Boundary condition values
+	MatrixXd bc(b.rows(),3);
+	
+	for(int j = 0 ; j<b.rows();j++){
+		bc.row(j) = meshV.row(b(j));
+	}
+
+	igl::harmonic(meshV, meshF, b, bc, k, smoothedMeshV);
+}
+
 int main(int argc, char *argv[])
 {
 	
@@ -415,7 +444,7 @@ int main(int argc, char *argv[])
 	
 	MatrixXi nRingF;
 	//Create N-ring boundary face matrix
-	getNringBoundaryMesh(originalV, originalF, nRingF);
+	get2ringBoundaryMesh(originalF, nRingF);
 
 	// Plot the mesh
 	//igl::opengl::glfw::Viewer viewer;
@@ -428,7 +457,7 @@ int main(int argc, char *argv[])
 	//Subdivide inner ring boundary
 	MatrixXd nRingV;
 	int divisions = pow(upsampleN, 2)+1;
-	subdivideInnerRingBoundary(originalV, originalF, nRingV, nRingF, divisions);
+	subdivideInnerRingBoundary(originalV, originalF, divisions, nRingV, nRingF);
 	//igl::writeOFF(outFile, nRingV, nRingF);
 	//return 0;
 
@@ -445,7 +474,12 @@ int main(int argc, char *argv[])
 	MatrixXd fairedV; //vertices
 	MatrixXi fairedF; //faces
 	fuseMeshes(patchV, patchF, nRingV, nRingF, fairedV, fairedF);
-	
+
+	MatrixXd smoothedMeshV;
+	smoothMeshWithFixed2ring(fairedV, fairedF, smoothedMeshV);
+	igl::writeOFF(outFile, smoothedMeshV, fairedF);
+	return 0;
+
 	// now we shall do surface fairing on the mesh, to ensure
 	// that the patch conforms to the surrounding curvature.
 	{
@@ -508,6 +542,11 @@ int main(int argc, char *argv[])
 	igl::decimate(fairedV, fairedF, outFacesN, finalV, finalF, temp0, temp1);*/
 	
 	//igl::writeOFF(outFile, finalV, finalF);
+
+	//fuse ring+patch and original mesh
+	//fuseMeshes(fairedV, fairedF, originalV, originalF, fairedV, fairedF);
+
+
 	igl::writeOFF(outFile, fairedV, fairedF);
 	//igl::writeOFF(outFile, fairedV, nRingF);
 	//igl::writeOFF(outFile, patchV, patchF);
