@@ -408,6 +408,44 @@ void  smoothMeshWithFixed2ring(MatrixXd& meshV, MatrixXi& meshF, MatrixXd& smoot
 	igl::harmonic(meshV, meshF, b, bc, k, smoothedMeshV);
 }
 
+void  remove2ringBoundary(const MatrixXi& originalF, MatrixXi& nRingF)
+{
+	int m = originalF.array().maxCoeff() + 1;
+	VectorXi originalLoop; // indices of the boundary of the hole. 
+	igl::boundary_loop(originalF, originalLoop);
+
+	Eigen::SparseVector<int> isBoundary(m);
+	for (int i = 0; i < originalLoop.size(); i++)
+	{
+		isBoundary.coeffRef(originalLoop(i)) = 1;
+	}
+
+	Eigen::SparseMatrix<int> adjMatrix(m, m);
+	igl::adjacency_matrix(originalF, adjMatrix);
+
+	Eigen::SparseVector<int> n_ring_boundary = (adjMatrix)*isBoundary;
+
+	//Triangles in n-ring
+	//A face that belongs to 2-ring boundary contains at least 1 vertex from boundary loop
+	int nonZeros = n_ring_boundary.nonZeros();
+	nRingF = MatrixXi(originalF.rows()-nonZeros, 3);
+	int j = 0;
+	for (int i = 0; i < originalF.rows(); i++)
+	{
+		int a = originalF(i, 0);
+		int b = originalF(i, 1);
+		int c = originalF(i, 2);
+
+		if ((isBoundary.coeffRef(a) == 0 && isBoundary.coeffRef(b) == 0 && isBoundary.coeffRef(c) == 0))
+		{
+			nRingF(j, 0) = a;
+			nRingF(j, 1) = b;
+			nRingF(j, 2) = c;
+			j++;
+		}
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	
@@ -444,25 +482,20 @@ int main(int argc, char *argv[])
 	
 	MatrixXi nRingF;
 	//Create N-ring boundary face matrix
-	get2ringBoundaryMesh(originalF, nRingF);
-
+	get2ringBoundaryMesh(originalF, nRingF);	   
 	// Plot the mesh
 	//igl::opengl::glfw::Viewer viewer;
 	//viewer.data().set_mesh(originalV, nRingF);
 	//viewer.launch();
 
-	//igl::writeOFF(outFile, originalV, nRingF);
-	//return 0;
 
 	//Subdivide inner ring boundary
 	MatrixXd nRingV;
-	int divisions = pow(upsampleN, 2)+1;
+	int divisions = pow(2, upsampleN)+1;
 	subdivideInnerRingBoundary(originalV, originalF, divisions, nRingV, nRingF);
 	//igl::writeOFF(outFile, nRingV, nRingF);
 	//return 0;
 
-	// upsample the original mesh. this makes fusing the original mesh with the patch much easier.
-	//igl::upsample(Eigen::MatrixXd(originalV), Eigen::MatrixXi(originalF), originalV, originalF, upsampleN);	
 
 	// a flat patch that fills the hole.
 	MatrixXd patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
@@ -477,80 +510,17 @@ int main(int argc, char *argv[])
 
 	MatrixXd smoothedMeshV;
 	smoothMeshWithFixed2ring(fairedV, fairedF, smoothedMeshV);
-	igl::writeOFF(outFile, smoothedMeshV, fairedF);
-	return 0;
 
-	// now we shall do surface fairing on the mesh, to ensure
-	// that the patch conforms to the surrounding curvature.
-	{
-
-		//igl::writeOFF(outFile, fairedV, fairedF);
-		//return 0;
-
-		VectorXi b(fairedV.rows() - patchV.rows() /*+ patchBorder.size()*/);
-		MatrixXd bc(fairedV.rows() - patchV.rows() /*+ patchBorder.size()*/, 3);
-		
-								  // setup the boundary conditions. This is simply the vertex positions of the vertices not part of the patch.		
-		
-		//Original boundary
-		for (int i = (int)patchV.rows(); i < (int)fairedV.rows(); ++i)
-		{					
-				int jj = i - (int)patchV.rows();	
-				b(jj) = i;
-
-				bc(jj, 0) = fairedV(i, 0);
-				bc(jj, 1) = fairedV(i, 1);
-				bc(jj, 2) = fairedV(i, 2);			
-
-		}
-		//std::cout << "This is b" << b << '\n';
-		//std::cout << "This is bC" << bc << '\n';		
-		
-		//TODO Add to b and bc all the vertices around the patch
-		/*auto offset = (int)fairedV.rows() - (int)patchV.rows();
-		for (int i = 0; i < patchBorder.size(); ++i) {
-			int jj = i+ offset;
-
-			b(jj) = patchBorder[i];
-
-			bc(jj, 0) = fairedV(patchBorder[i], 0);
-			bc(jj, 1) = fairedV(patchBorder[i], 1);
-			bc(jj, 2) = fairedV(patchBorder[i], 2);
-		}
-*/
-		
-		MatrixXd Z;
-		int k = 2;
-		// surface fairing simply means that we solve the equation
-		// Delta^2 f = 0
-		// with appropriate boundary conditions.
-		// this function igl::harmonic from libigl takes care of that.
-
-		// note that this is pretty inefficient thought.
-		// the only boundary conditions necessary are the 2-ring of vertices around the patch.
-		// the rest of the mesh vertices need not be specified.
-		// we specify the rest of the mesh for simplicity of code, but it is not strictly necessary,
-		// and pretty inefficient, since we have to solve a LARGE matrix equation as a result of this.
-		igl::harmonic(fairedV, fairedF, b, bc, k, Z);
-		fairedV = Z;
-	}
-
-	// finally, we do a decimation step.
-	/*MatrixXd finalV(fusedV.size(), 3);
-	MatrixXi finalF(fusedF.size(), 3);
-	VectorXi temp0; VectorXi temp1;
-	igl::decimate(fairedV, fairedF, outFacesN, finalV, finalF, temp0, temp1);*/
-	
-	//igl::writeOFF(outFile, finalV, finalF);
-
-	//fuse ring+patch and original mesh
-	//fuseMeshes(fairedV, fairedF, originalV, originalF, fairedV, fairedF);
+	MatrixXi originalWithout2ringF;
+	remove2ringBoundary(originalF, originalWithout2ringF);
 
 
+	fuseMeshes(originalV, originalWithout2ringF, smoothedMeshV, fairedF, fairedV, fairedF);
 	igl::writeOFF(outFile, fairedV, fairedF);
-	//igl::writeOFF(outFile, fairedV, nRingF);
-	//igl::writeOFF(outFile, patchV, patchF);
-	//igl::writeOFF(outFile, patchBoundary, patchF);
+
+	//igl::writeOFF(outFile, smoothedMeshV, fairedF);
+	//return 0;
+	
 
 }
 
