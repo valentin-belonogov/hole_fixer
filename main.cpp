@@ -378,7 +378,6 @@ void fuseMeshes(const MatrixXd& patchV, const MatrixXi& patchF, const MatrixXd& 
 
 }
 
-//
 void  smoothMeshWithFixed2ring(MatrixXd& meshV, MatrixXi& meshF, MatrixXd& smoothedMeshV)
 
 {	
@@ -425,8 +424,8 @@ void  remove2ringBoundary(const MatrixXi& originalF, MatrixXi& nRingF)
 
 	Eigen::SparseVector<int> n_ring_boundary = (adjMatrix)*isBoundary;
 
-	//Triangles in n-ring
-	//A face that belongs to 2-ring boundary contains at least 1 vertex from boundary loop
+	//Triangles in original mesh without 2-ring boundary
+	//Add only those faces, none of the vertices of which belong to the boundary
 	int nonZeros = n_ring_boundary.nonZeros();
 	nRingF = MatrixXi(originalF.rows()-nonZeros, 3);
 	int j = 0;
@@ -446,9 +445,49 @@ void  remove2ringBoundary(const MatrixXi& originalF, MatrixXi& nRingF)
 	}
 }
 
-int main(int argc, char *argv[])
+void fillHole(const MatrixXd& originalV, const MatrixXi& originalF, int upsampleN, MatrixXd& fairedV, MatrixXi& fairedF)
 {
-	
+	VectorXi originalLoop; // indices of the boundary of the hole. 
+	igl::boundary_loop(originalF, originalLoop);
+
+	if (originalLoop.size() == 0) {
+		printf("Mesh has no hole!");
+		printHelpExit();
+	}
+	MatrixXi nRingF;
+	//Create N-ring boundary face matrix
+	get2ringBoundaryMesh(originalF, nRingF);
+
+	//Subdivide inner ring boundary
+	MatrixXd nRingV;
+	int divisions = pow(2, upsampleN) + 1;
+	subdivideInnerRingBoundary(originalV, originalF, divisions, nRingV, nRingF);
+
+	// a flat patch that fills the hole.
+	MatrixXd patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
+	MatrixXi patchF = MatrixXi(originalLoop.size(), 3);
+	createMeshPatch(originalLoop, originalV, patchV, patchF);
+	igl::upsample(Eigen::MatrixXd(patchV), Eigen::MatrixXi(patchF), patchV, patchF, upsampleN);
+
+	//Fuse meshes
+	//MatrixXd fairedV; //vertices
+	//MatrixXi fairedF; //faces
+	fuseMeshes(patchV, patchF, nRingV, nRingF, fairedV, fairedF);
+
+	//Smooth fused patch and boundary
+	MatrixXd smoothedMeshV;
+	smoothMeshWithFixed2ring(fairedV, fairedF, smoothedMeshV);
+
+	//Remove 2-ring boundary from original mesh
+	MatrixXi originalWithout2ringF;
+	remove2ringBoundary(originalF, originalWithout2ringF);
+
+	//Fuse the smoothed part with the output of the function above
+	fuseMeshes(originalV, originalWithout2ringF, smoothedMeshV, fairedF, fairedV, fairedF);
+
+}
+int main(int argc, char *argv[])
+{	
 	//
 	// command line parsing.
 	//
@@ -472,55 +511,10 @@ int main(int argc, char *argv[])
 		printHelpExit();
 	}	
 
-	VectorXi originalLoop; // indices of the boundary of the hole. 
-	igl::boundary_loop(originalF, originalLoop);
-
-	if (originalLoop.size() == 0) {
-		printf("Mesh has no hole!");
-		printHelpExit();
-	}
-	
-	MatrixXi nRingF;
-	//Create N-ring boundary face matrix
-	get2ringBoundaryMesh(originalF, nRingF);	   
-	// Plot the mesh
-	//igl::opengl::glfw::Viewer viewer;
-	//viewer.data().set_mesh(originalV, nRingF);
-	//viewer.launch();
-
-
-	//Subdivide inner ring boundary
-	MatrixXd nRingV;
-	int divisions = pow(2, upsampleN)+1;
-	subdivideInnerRingBoundary(originalV, originalF, divisions, nRingV, nRingF);
-	//igl::writeOFF(outFile, nRingV, nRingF);
-	//return 0;
-
-
-	// a flat patch that fills the hole.
-	MatrixXd patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
-	MatrixXi patchF = MatrixXi(originalLoop.size(), 3);	
-	createMeshPatch(originalLoop, originalV, patchV, patchF);
-	igl::upsample(Eigen::MatrixXd(patchV), Eigen::MatrixXi(patchF), patchV, patchF, upsampleN);
-
-	//Fuse meshes
 	MatrixXd fairedV; //vertices
 	MatrixXi fairedF; //faces
-	fuseMeshes(patchV, patchF, nRingV, nRingF, fairedV, fairedF);
-
-	MatrixXd smoothedMeshV;
-	smoothMeshWithFixed2ring(fairedV, fairedF, smoothedMeshV);
-
-	MatrixXi originalWithout2ringF;
-	remove2ringBoundary(originalF, originalWithout2ringF);
-
-
-	fuseMeshes(originalV, originalWithout2ringF, smoothedMeshV, fairedF, fairedV, fairedF);
+	fillHole(originalV, originalF, upsampleN, fairedV, fairedF);
 	igl::writeOFF(outFile, fairedV, fairedF);
-
-	//igl::writeOFF(outFile, smoothedMeshV, fairedF);
-	//return 0;
 	
-
 }
 
