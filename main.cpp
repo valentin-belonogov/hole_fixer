@@ -445,14 +445,15 @@ void  remove2ringBoundary(const MatrixXi& originalF, MatrixXi& nRingF)
 	}
 }
 
-void fillHole(const MatrixXd& originalV, const MatrixXi& originalF, int upsampleN, MatrixXd& fairedV, MatrixXi& fairedF)
+bool fillHole(const MatrixXd& originalV, const MatrixXi& originalF, int upsampleN, MatrixXd& fairedV, MatrixXi& fairedF)
 {
 	VectorXi originalLoop; // indices of the boundary of the hole. 
 	igl::boundary_loop(originalF, originalLoop);
 
 	if (originalLoop.size() == 0) {
-		printf("Mesh has no hole!");
-		printHelpExit();
+		fairedV = originalV;
+		fairedF = originalF;
+		return false;
 	}
 	MatrixXi nRingF;
 	//Create N-ring boundary face matrix
@@ -484,8 +485,23 @@ void fillHole(const MatrixXd& originalV, const MatrixXi& originalF, int upsample
 
 	//Fuse the smoothed part with the output of the function above
 	fuseMeshes(originalV, originalWithout2ringF, smoothedMeshV, fairedF, fairedV, fairedF);
-
+	return true;
 }
+
+bool fillHoles(const MatrixXd& originalV, const MatrixXi& originalF, int upsampleN, MatrixXd& fairedV, MatrixXi& fairedF)
+{
+	bool holeWasFilled = fillHole(originalV, originalF, upsampleN,  fairedV, fairedF);
+	if (!holeWasFilled)
+		return false;
+
+	MatrixXd fairedV1;
+	MatrixXi fairedF1;
+	fillHoles(fairedV, fairedF, upsampleN, fairedV1, fairedF1);
+	fairedV=fairedV1;
+	fairedF=fairedF1;
+	return true;
+}
+
 int main(int argc, char *argv[])
 {	
 	//
@@ -513,7 +529,7 @@ int main(int argc, char *argv[])
 
 	MatrixXd fairedV; //vertices
 	MatrixXi fairedF; //faces
-	fillHole(originalV, originalF, upsampleN, fairedV, fairedF);
+	fillHoles(originalV, originalF, upsampleN, fairedV, fairedF);
 	igl::writeOFF(outFile, fairedV, fairedF);
 	
 }
