@@ -70,10 +70,10 @@ bool parseIntParam(const char* param, int argc, char* argv[], unsigned int& out)
 	}
 }
 
-void get2ringBoundaryMesh(const MatrixXi& originalF, MatrixXi& nRingF)
+void get2ringBoundaryMesh(const MatrixXi& originalF, MatrixXi& nRingF, VectorXi& originalLoop)
 {
 	int m = originalF.array().maxCoeff()+1;
-	VectorXi originalLoop; // indices of the boundary of the hole. 
+	
 	igl::boundary_loop(originalF, originalLoop);	
 
 	Eigen::SparseVector<int> isBoundary(m);
@@ -108,33 +108,55 @@ void get2ringBoundaryMesh(const MatrixXi& originalF, MatrixXi& nRingF)
 	}
 }
 
-void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& originalF, int divisions, MatrixXd& nRingV, MatrixXi& nRingF)
+void subdivideInnerRingBoundary(
+	const MatrixXd& originalV, 
+	const MatrixXi& originalF, 
+	const MatrixXi& ringF,
+	const VectorXi& ringBoundary,
+	int divisions,
+	MatrixXd& ringDivV,
+	MatrixXi& ringDivF
+)
 {
-	VectorXi originalLoop; // indices of the boundary of the hole. 
-	igl::boundary_loop(originalF, originalLoop);
+	if(divisions<=2)
+	{
+		ringDivF = ringF;
+		// Has more vertices than we need 
+		// ( should be a one liner somwhere to remove the not needed ones
+		ringDivV = originalV; 
+		return;
+	}
+	
+
 
 	Eigen::SparseVector<int> isBoundary((int)originalV.rows());
-	for (int i = 0; i < originalLoop.size(); i++)
+	for (int i = 0; i < ringBoundary.size(); i++)
 	{
-		isBoundary.coeffRef(originalLoop(i)) = 1;
+		isBoundary.coeffRef(ringBoundary(i)) = 1;
 	}
 
 	std::cout << "Rows before" << originalV.rows();
-	//upsampling
-	nRingV = originalV;
-	nRingV.conservativeResize(nRingV.rows()+isBoundary.nonZeros()*(divisions-2), nRingV.cols());
+	//upsampling 
+	int nonZeros = isBoundary.nonZeros();
+	int sizeIncr = nonZeros*(divisions-2);
+
+	ringDivV = originalV;
+	ringDivV.conservativeResize(ringDivV.rows()+sizeIncr, 3);
 
 	int counterV = originalV.rows();
-	int counterF = nRingF.rows();
+
+	
+
+	ringDivF = ringF;
+    int counterF = ringF.rows();
+	ringDivF.conservativeResize(ringDivF.rows() + sizeIncr, 3);
+
 	int initF = counterF;
-
-	nRingF.conservativeResize(nRingF.rows() + isBoundary.nonZeros()*(divisions-2), nRingF.cols());
-
 	for (int i = 0; i < initF; i++)
 	{
-		int a = nRingF(i, 0);
-		int b = nRingF(i, 1);
-		int c = nRingF(i, 2);
+		int a = ringDivF(i, 0);
+		int b = ringDivF(i, 1);
+		int c = ringDivF(i, 2);
 		
 		auto boundaryCounter = [&](int i){
 		    return (int)isBoundary.coeffRef(i)>0;
@@ -144,10 +166,6 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 		if (boundaryCount==2)
 		{
 						
-			nRingV(counterV, 0) = 0;
-			nRingV(counterV, 1) = 0;
-			nRingV(counterV, 2) = 0;
-
 			int v[2]={0,0},vi=0;
 			if(boundaryCounter(a))
 				v[vi++]=a;
@@ -161,69 +179,47 @@ void subdivideInnerRingBoundary(const MatrixXd& originalV, const MatrixXi& origi
 			auto midPoint = [&](int i) -> VectorXd {
 				double s0 = ((double)divisions - i - 1)/((double)divisions-1);
 				double s1 = 1-s0;
-				return s0 * nRingV.row(v[0]) + s1*nRingV.row(v[1]);	
+				return s0 * ringDivV.row(v[0]) + s1*ringDivV.row(v[1]);	
 			};
 
 			for (int i=1;i<=divisions-2;i++)
 			{
-			nRingV.row(counterV+i-1) = midPoint(i);
+			    ringDivV.row(counterV+i-1) = midPoint(i);
 			}
-		   /*nRingV(nRingV.rows(), 0) = (isBoundary.coeffRef(a)*nRingV(a, 0) + isBoundary.coeffRef(b)*nRingV(b, 0) + isBoundary.coeffRef(c)*nRingV(c, 0)) / 2;
-			nRingV(nRingV.rows(), 1) = (isBoundary.coeffRef(a)*nRingV(a, 1) + isBoundary.coeffRef(b)*nRingV(b, 1) + isBoundary.coeffRef(c)*nRingV(c, 1)) / 2;
-			nRingV(nRingV.rows(), 2) = (isBoundary.coeffRef(a)*nRingV(a, 2) + isBoundary.coeffRef(b)*nRingV(b, 2) + isBoundary.coeffRef(c)*nRingV(c, 2)) / 2;*/
+		 
+			{
+				std::vector<int> tri = {a,b,c};
+				if(!isBoundary.coeffRef(b)){
+					std::rotate(tri.begin(), tri.begin()+1,tri.end());
+				}else if(!isBoundary.coeffRef(c)){
+					std::rotate(tri.begin(), tri.begin()+2,tri.end());
+				}
+				a = tri[0];
+				b = tri[1];
+				c = tri[2];
+			}			
+
+			// Replace the first big triangle with the first subdivision
+			ringDivF(i, 0) = a;
+			ringDivF(i, 1) = b;
+			ringDivF(i, 2) = counterV;
+
+			for (int i = 1; i < divisions - 2; i++)
+			{
+				auto j = counterF + i - 1;
+				ringDivF(j, 0) = a;
+				ringDivF(j, 1) = counterV + i - 1;
+				ringDivF(j, 2) = counterV + i;
+			}
+
+			{
+				auto j = counterF + divisions - 3;
+				ringDivF(j, 0) = a;
+				ringDivF(j, 1) = counterV + divisions - 3;
+				ringDivF(j, 2) = c;
+			}
+						
 			
-			if (isBoundary.coeffRef(a) == 0)
-			{
-				nRingF(i, 0) = a;
-				nRingF(i, 1) = b;
-				nRingF(i, 2) = counterV;
-
-				for(int i=1; i<divisions-2;i++)
-				{
-					nRingF(counterF+i-1, 0) = a;
-					nRingF(counterF+i-1, 1) = counterV+i-1;
-					nRingF(counterF+i-1, 2) = counterV+i;
-				}
-
-				nRingF(counterF+divisions-3, 0) = a;
-				nRingF(counterF+divisions-3, 1) = counterV+divisions-3;
-				nRingF(counterF+divisions-3, 2) = c;
-			}
-			if (isBoundary.coeffRef(b) == 0)
-			{
-				nRingF(i, 0) = b;
-				nRingF(i, 1) = counterV;
-				nRingF(i, 2) = a;
-
-				for (int i = 1; i < divisions - 2; i++)
-				{
-					nRingF(counterF + i - 1, 0) = counterV + i - 1;
-					nRingF(counterF + i - 1, 1) = b;
-					nRingF(counterF + i - 1, 2) = counterV + i;
-				}
-
-				nRingF(counterF+divisions-3, 0) = b;
-				nRingF(counterF+divisions-3, 1) = c;
-				nRingF(counterF+divisions-3, 2) = counterV+divisions-3;
-			}
-
-			if (isBoundary.coeffRef(c) == 0)
-			{
-				nRingF(i, 0) = a;
-				nRingF(i, 1) = counterV;
-				nRingF(i, 2) = c;
-
-				for (int i = 1; i < divisions - 2; i++)
-				{
-					nRingF(counterF + i - 1, 0) = c;
-					nRingF(counterF + i - 1, 1) = counterV + i - 1;
-					nRingF(counterF + i - 1, 2) = counterV + i;
-				}
-
-				nRingF(counterF+divisions-3, 0) = b;
-				nRingF(counterF+divisions-3, 1) = c;
-				nRingF(counterF+divisions-3, 2) = counterV+divisions-3;
-			}
 			counterF+=divisions-2;
 			counterV+=divisions-2;
 
@@ -308,11 +304,11 @@ void fuseMeshes(const MatrixXd& patchV, const MatrixXi& patchF, const MatrixXd& 
 			int triIndices[3];
 			for (int iv = 0; iv < 3; ++iv) {
 
-				int triIndex = originalF(itri, iv);
+				int vertexIndex = originalF(itri, iv);
 
 				int ret;
 
-				if (originalToFusedMap.count(triIndex) == 0) {
+				if (originalToFusedMap.count(vertexIndex) == 0) {
 					int foundMatch = -1;
 
 					// the vertices at the boundary are the same, for both the two meshes(patch and original mesh).
@@ -320,7 +316,7 @@ void fuseMeshes(const MatrixXd& patchV, const MatrixXi& patchF, const MatrixXd& 
 					// this is also how we ensure that the two meshes are fused together.
 					for (int jj = 0; jj < patchV.rows(); ++jj) {
 						VectorXd u(3); u << fusedV[jj][0], fusedV[jj][1], fusedV[jj][2];
-						VectorXd v(3); v << originalV(triIndex, 0), originalV(triIndex, 1), originalV(triIndex, 2);
+						VectorXd v(3); v << originalV(vertexIndex, 0), originalV(vertexIndex, 1), originalV(vertexIndex, 2);
 
 						if ((u - v).norm() < 0.00001) {
 							foundMatch = jj;
@@ -329,18 +325,18 @@ void fuseMeshes(const MatrixXd& patchV, const MatrixXi& patchF, const MatrixXd& 
 					}
 
 					if (foundMatch != -1) {
-						originalToFusedMap[triIndex] = foundMatch;
+						originalToFusedMap[vertexIndex] = foundMatch;
 						ret = foundMatch;
 					}
 					else {
-						fusedV.push_back({ originalV(triIndex, 0), originalV(triIndex, 1), originalV(triIndex, 2) });
-						originalToFusedMap[triIndex] = index;
+						fusedV.push_back({ originalV(vertexIndex, 0), originalV(vertexIndex, 1), originalV(vertexIndex, 2) });
+						originalToFusedMap[vertexIndex] = index;
 						ret = index;
 						index++;
 					}
 				}
 				else {
-					ret = originalToFusedMap[triIndex];
+					ret = originalToFusedMap[vertexIndex];
 				}
 
 				triIndices[iv] = ret;
@@ -383,7 +379,9 @@ void  smoothMeshWithFixed2ring(MatrixXd& meshV, MatrixXi& meshF, MatrixXd& smoot
 {	
 	int k = 2;
 	MatrixXi ringF; 
-	get2ringBoundaryMesh(meshF, ringF);
+	VectorXi ringBoundary;
+
+	get2ringBoundaryMesh(meshF, ringF, ringBoundary);
 	// surface fairing simply means that we solve the equation
 	// Delta^2 f = 0
 	// with appropriate boundary conditions.
@@ -456,24 +454,32 @@ bool fillHole(const MatrixXd& originalV, const MatrixXi& originalF, int upsample
 		return false;
 	}
 	MatrixXi nRingF;
+	VectorXi nRingBoundary;
 	//Create N-ring boundary face matrix
-	get2ringBoundaryMesh(originalF, nRingF);
+	get2ringBoundaryMesh(originalF, nRingF, nRingBoundary);
+	igl::writeOFF("2ring.off", originalV, nRingF);
 
 	//Subdivide inner ring boundary
-	MatrixXd nRingV;
+	MatrixXd nRingDivV;
+	MatrixXi nRingDivF;
 	int divisions = pow(2, upsampleN) + 1;
-	subdivideInnerRingBoundary(originalV, originalF, divisions, nRingV, nRingF);
+	subdivideInnerRingBoundary(originalV, originalF, nRingF, nRingBoundary, divisions, nRingDivV, nRingDivF);
+	igl::writeOFF("2ringSub.off", nRingDivV, nRingDivF);
 
 	// a flat patch that fills the hole.
 	MatrixXd patchV = MatrixXd(originalLoop.size() + 1, 3); // patch will have an extra vertex for the center vertex.
 	MatrixXi patchF = MatrixXi(originalLoop.size(), 3);
 	createMeshPatch(originalLoop, originalV, patchV, patchF);
+	igl::writeOFF("Patch.off", patchV, patchF);
+
 	igl::upsample(Eigen::MatrixXd(patchV), Eigen::MatrixXi(patchF), patchV, patchF, upsampleN);
+	igl::writeOFF("PatchUpsample.off", patchV, patchF);
 
 	//Fuse meshes
 	//MatrixXd fairedV; //vertices
 	//MatrixXi fairedF; //faces
-	fuseMeshes(patchV, patchF, nRingV, nRingF, fairedV, fairedF);
+	fuseMeshes(patchV, patchF, nRingDivV, nRingDivF, fairedV, fairedF);
+	igl::writeOFF("FusedRingAndPatch.off", fairedV, fairedF);
 
 	//Smooth fused patch and boundary
 	MatrixXd smoothedMeshV;
@@ -493,6 +499,8 @@ bool fillHoles(const MatrixXd& originalV, const MatrixXi& originalF, int upsampl
 	bool holeWasFilled = fillHole(originalV, originalF, upsampleN,  fairedV, fairedF);
 	if (!holeWasFilled)
 		return false;
+	// TODO UNDO
+	return true;
 
 	MatrixXd fairedV1;
 	MatrixXi fairedF1;
